@@ -225,9 +225,19 @@ ANSC_STATUS wanmgr_handle_dhcpv4_event_data(DML_VIRTUAL_IFACE* pVirtIf)
             CcspTraceError((" %s %d - bad address %s/%s \n",__FUNCTION__,__LINE__, pVirtIf->IP.Ipv4Data.ip, pVirtIf->IP.Ipv4Data.mask));
             return ANSC_STATUS_FAILURE;
         }
+#if defined WAN_Manager_Enable_BackupWan
+        char wan_interface_name[BUFLEN_128] = {0};
+        sysevent_get(sysevent_fd, sysevent_token, SYSEVENT_WAN_IFNAME, wan_interface_name, sizeof(wan_interface_name));
+
+        CcspTraceInfo(("%s %d -  wan_interface_name = %s \n", __FUNCTION__, __LINE__, wan_interface_name));
+        snprintf(cmdStr, sizeof(cmdStr), "ifconfig %s %s netmask %s broadcast %s mtu %u",
+                wan_interface_name, pVirtIf->IP.Ipv4Data.ip, pVirtIf->IP.Ipv4Data.mask, bCastStr, pVirtIf->IP.Ipv4Data.mtuSize);
+
+#else
 
         snprintf(cmdStr, sizeof(cmdStr), "ifconfig %s %s netmask %s broadcast %s mtu %u",
                 pVirtIf->IP.Ipv4Data.ifname, pVirtIf->IP.Ipv4Data.ip, pVirtIf->IP.Ipv4Data.mask, bCastStr, pVirtIf->IP.Ipv4Data.mtuSize);
+#endif
         CcspTraceInfo(("%s %d -  IP configuration = %s \n", __FUNCTION__, __LINE__, cmdStr));
         WanManager_DoSystemAction("setupIPv4:", cmdStr);
 

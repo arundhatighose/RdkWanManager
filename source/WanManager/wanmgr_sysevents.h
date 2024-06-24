@@ -106,6 +106,7 @@
 
 /*WAN specific sysevent fieldnames*/
 #define SYSEVENT_CURRENT_WAN_IFNAME "current_wan_ifname"
+#define SYSEVENT_WAN_IFNAME         "wan_ifname"
 #define SYSEVENT_WAN_STATUS         "wan-status"
 #define SYSEVENT_LAN_STATUS         "lan-status"
 #define SYSEVENT_CURRENT_WAN_IPADDR "current_wan_ipaddr"

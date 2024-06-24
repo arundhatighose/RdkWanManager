@@ -39,6 +39,7 @@
 #include <telemetry_busmessage_sender.h>
 #endif
 
+#define DATAMODEL_PARAM_LENGTH 256
 #define IF_SIZE      32
 #define DEFAULT_IFNAME    "erouter0"
 #define LOOP_TIMEOUT 50000 // timeout in microseconds. This is the state machine loop interval
@@ -1125,12 +1126,21 @@ static int wan_setUpIPv4(WanMgr_IfaceSM_Controller_t * pWanIfaceCtrl)
     }
 
         /** Set default gatway. */
+#if defined WAN_Manager_Enable_BackupWan
+    if (strstr(pInterface->BaseInterface, "Cellular") != NULL)
+    {
+        char wan_interface_name[BUFLEN_128] = {0};
+        sysevent_get(sysevent_fd, sysevent_token, SYSEVENT_WAN_IFNAME, wan_interface_name, sizeof(wan_interface_name));
+        CcspTraceInfo(("%s %d -  add default gateway \n", __FUNCTION__, __LINE__));
+        v_secure_system("route add default gw %s %s",p_VirtIf->IP.Ipv4Data.gateway,wan_interface_name);
+    }
+#else
     if (WanManager_AddDefaultGatewayRoute(DeviceNwMode, &p_VirtIf->IP.Ipv4Data) != RETURN_OK)
     {
         CcspTraceError(("%s %d - Failed to set up default system gateway", __FUNCTION__, __LINE__));
         ret = RETURN_ERR;
     }
-
+#endif
     /** Update required sysevents. */
 
     sysevent_set(sysevent_fd, sysevent_token, SYSEVENT_IPV4_CONNECTION_STATE, WAN_STATUS_UP, 0);
@@ -1680,6 +1690,9 @@ static eWanState_t wan_transition_start(WanMgr_IfaceSM_Controller_t* pWanIfaceCt
 
     int  uptime = 0;
     char buffer[64] = {0};
+    char param_value[256] ={0};
+    char param_name[512] ={0};
+    int retPsmGet = CCSP_SUCCESS;
 
     DML_WAN_IFACE* pInterface = pWanIfaceCtrl->pIfaceData;
     DML_VIRTUAL_IFACE* p_VirtIf = WanMgr_getVirtualIfaceById(pInterface->VirtIfList, pWanIfaceCtrl->VirIfIdx);
@@ -1701,19 +1714,30 @@ static eWanState_t wan_transition_start(WanMgr_IfaceSM_Controller_t* pWanIfaceCt
     {
         CcspTraceInfo(("%s %d - Already WAN interface %s created\n", __FUNCTION__, __LINE__, p_VirtIf->Name));
     }
+#if defined (WAN_Manager_Enable_BackupWan)
+    //VirtualInterface.{i}.Name should be blank in case of Cellular as we get the interface name based on the USB Device connected(RNDIS/USBMODEM type)
+    if(strcmp(p_VirtIf->Name, "") != 0)
+    {
+        _ansc_memset(param_name, 0, sizeof(param_name));
+        _ansc_memset(param_value, 0, sizeof(param_value));
+        snprintf(param_name, sizeof(param_name),"%s.%s",p_VirtIf->VLAN.VLANInUse,"X_RDK_BaseInterface");
+        snprintf( param_value, DATAMODEL_PARAM_LENGTH,"%s",p_VirtIf->Name);
+        WanMgr_RdkBus_SetParamValues( VLAN_COMPONENT_NAME, VLAN_DBUS_PATH, param_name, param_value, ccsp_string, TRUE );
+    }
+#else
 
 #if !defined(FEATURE_RDKB_CONFIGURABLE_WAN_INTERFACE) 
     if(pInterface->IfaceType != REMOTE_IFACE)
     {
         /* TODO: This is a workaround for the platforms using same Wan Name.*/
-        char param_value[256] ={0};
-        char param_name[512] ={0};
-        int retPsmGet = CCSP_SUCCESS;
+        _ansc_memset(param_name, 0, sizeof(param_name));
+        _ansc_memset(param_value, 0, sizeof(param_value));
         _ansc_sprintf(param_name, PSM_WANMANAGER_IF_VIRIF_NAME, (p_VirtIf->baseIfIdx + 1), (p_VirtIf->VirIfIdx + 1));
         retPsmGet = WanMgr_RdkBus_GetParamValuesFromDB(param_name,param_value,sizeof(param_value));
         AnscCopyString(p_VirtIf->Name, (retPsmGet == CCSP_SUCCESS && (strlen(param_value) > 0 )) ? param_value: "erouter0");
         CcspTraceInfo(("%s %d VIRIF_NAME is copied from PSM. %s\n", __FUNCTION__, __LINE__, p_VirtIf->Name));
     }
+#endif
 #endif
     /*TODO: VLAN should not be set for Remote Interface, for More info, refer RDKB-42676*/
     if(  p_VirtIf->VLAN.Enable == TRUE && p_VirtIf->VLAN.Status == WAN_IFACE_LINKSTATUS_DOWN && pInterface->IfaceType != REMOTE_IFACE)
@@ -1919,9 +1943,30 @@ static eWanState_t wan_transition_wan_validated(WanMgr_IfaceSM_Controller_t* pWa
         if (p_VirtIf->IP.IPv4Source == DML_WAN_IP_SOURCE_DHCP &&
             (p_VirtIf->IP.Mode == DML_WAN_IP_MODE_DUAL_STACK || p_VirtIf->IP.Mode == DML_WAN_IP_MODE_IPV4_ONLY))
         {
+#if defined WAN_Manager_Enable_BackupWan
+            char wan_interface_name[BUFLEN_128] = {0};
+            sysevent_get(sysevent_fd, sysevent_token, SYSEVENT_WAN_IFNAME, wan_interface_name, sizeof(wan_interface_name));
+            DML_VIRTUAL_IFACE  tempObj;
+            memset(&tempObj,0,sizeof(DML_VIRTUAL_IFACE));
+            memcpy(&tempObj, p_VirtIf, sizeof(DML_VIRTUAL_IFACE));
+            strcpy(tempObj.Name,wan_interface_name);
+
+	    CcspTraceInfo(("%s %d pInterface->BaseInterface:[%s]\n",__FUNCTION__,__LINE__));
+            //For cellular interface if IP source is DHCP , then start dhcp client on wan interface
+            if(strstr(pInterface->BaseInterface, "Cellular") != NULL)
+            {
+                p_VirtIf->IP.Dhcp4cPid = WanManager_StartDhcpv4Client(&tempObj, pInterface->Name, pInterface->IfaceType);
+                CcspTraceInfo(("%s %d - Started dhcpc on Cellular interface %s, dhcpv4_pid %d \n", __FUNCTION__, __LINE__, tempObj.Name, p_VirtIf->IP.Dhcp4cPid));
+            }
+            else
+            {
+#endif
             /* Start DHCPv4 client */
             p_VirtIf->IP.Dhcp4cPid = WanManager_StartDhcpv4Client(p_VirtIf,pInterface->Name, pInterface->IfaceType);
             CcspTraceInfo(("%s %d - Started dhcpc on interface %s, dhcpv4_pid %d \n", __FUNCTION__, __LINE__, p_VirtIf->Name, p_VirtIf->IP.Dhcp4cPid));
+#if defined WAN_Manager_Enable_BackupWan
+            }
+#endif
         }
 
         if(p_VirtIf->IP.IPv6Source == DML_WAN_IP_SOURCE_DHCP && (p_VirtIf->IP.Dhcp6cPid == 0) &&
